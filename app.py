@@ -168,48 +168,86 @@ except Exception as error:
 # ============================================================
 
 @st.cache_resource
+
+
+    
+
+@st.cache_resource
 def load_resources(db_path):
 
-    # Load the same embedding model used in Week 2.
+    # Load the embedding model.
     embedding_model = SentenceTransformer(
         EMBEDDING_MODEL_NAME
     )
 
-    # Connect to the existing ChromaDB database.
+    # Connect to ChromaDB.
     chroma_client = chromadb.PersistentClient(
         path=db_path
     )
 
-    # Access the existing collection.
-    collection = chroma_client.get_collection(
-        name=COLLECTION_NAME
+    # Get the existing collection or create it.
+    collection = chroma_client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        metadata={"hnsw:space": "cosine"}
     )
 
-    return embedding_model, collection
+    # If the collection is empty, load the sample document.
+    if collection.count() == 0:
 
+        document_path = BASE_DIR / "sample_document.txt"
 
-try:
+        if not document_path.exists():
+            raise FileNotFoundError(
+                "sample_document.txt was not found."
+            )
 
-    with st.spinner("Loading AI resources..."):
+        with open(
+            document_path,
+            "r",
+            encoding="utf-8"
+        ) as file:
+            text = file.read().strip()
 
-        embedding_model, collection = load_resources(
-            DB_PATH
+        if not text:
+            raise ValueError(
+                "sample_document.txt is empty."
+            )
+
+        # Split the document into manageable chunks.
+        chunk_size = 1000
+        overlap = 150
+        chunks = []
+        start = 0
+
+        while start < len(text):
+            chunk = text[start:start + chunk_size].strip()
+
+            if chunk:
+                chunks.append(chunk)
+
+            start += chunk_size - overlap
+
+        # Convert document chunks into embeddings.
+        embeddings = embedding_model.encode(
+            chunks,
+            show_progress_bar=False
+        ).tolist()
+
+        # Save the chunks and embeddings in ChromaDB.
+        collection.add(
+            ids=[
+                f"document_chunk_{i}"
+                for i in range(len(chunks))
+            ],
+            documents=chunks,
+            embeddings=embeddings,
+            metadatas=[
+                {"source": "sample_document.txt"}
+                for _ in chunks
+            ]
         )
 
-except Exception as error:
-
-    st.error(
-        "Unable to load the embedding model or ChromaDB."
-    )
-
-    st.code(str(error))
-
-    st.info(
-        "Check that your chroma_db folder exists "
-        "and contains the week2_documents collection."
-    )
-
-    st.stop()
+    return embedding_model, collection
 
 
 # ============================================================
