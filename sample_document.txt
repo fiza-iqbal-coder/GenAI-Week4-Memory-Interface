@@ -1,0 +1,11 @@
+Artificial Intelligence (AI) is a field of computer science that develops systems capable of performing tasks that normally require human intelligence. These tasks can include understanding language, recognizing patterns, and solving problems.
+
+Machine Learning (ML) is a branch of Artificial Intelligence that enables computers to learn patterns from data rather than relying only on explicitly written rules. Supervised learning uses labeled examples to learn a mapping from inputs to expected outputs. Unsupervised learning discovers patterns in data without target labels.
+
+Natural Language Processing (NLP) is an area of AI focused on analyzing, understanding, and generating human language. NLP applications include text classification, summarization, and question answering.
+
+A vector database stores vector representations, often called embeddings, of text or other content. Similarity search compares a query embedding with stored embeddings to retrieve related items.
+
+Retrieval-Augmented Generation (RAG) combines information retrieval with language model generation. In a typical RAG pipeline, documents are split into chunks, embedded, and stored in a vector database. A user question is embedded and matched against stored chunks. Relevant retrieved chunks are included in the prompt sent to a language model, which then generates an answer grounded in the supplied context.
+
+RAG can reduce unsupported answers by providing relevant source text, but retrieval and prompting alone do not guarantee factual accuracy. Source citations help users trace claims to retrieved excerpts.
