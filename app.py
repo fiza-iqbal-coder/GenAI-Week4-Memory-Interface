@@ -1,28 +1,9 @@
-
-import os
-from pathlib import Path
-
-import chromadb
-import streamlit as st
-from dotenv import load_dotenv
-from google import genai
-from sentence_transformers import SentenceTransformer
-
-WEEK4_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = WEEK4_DIR.parent
-
-load_dotenv(PROJECT_ROOT / ".env")
-
-DB_PATH = PROJECT_ROOT / "chroma_db"
-COLLECTION_NAME = "week2_documents"
-
 import os
 import time
 from pathlib import Path
 
-import streamlit as st
 import chromadb
-
+import streamlit as st
 from dotenv import load_dotenv
 from google import genai
 from sentence_transformers import SentenceTransformer
@@ -70,7 +51,6 @@ REFUSAL_MESSAGE = (
 st.markdown(
     """
     <style>
-
     .stApp {
         background-color: #f8fafc;
     }
@@ -98,7 +78,6 @@ st.markdown(
         border-radius: 10px;
         font-weight: 600;
     }
-
     </style>
     """,
     unsafe_allow_html=True
@@ -110,8 +89,11 @@ st.markdown(
 # ============================================================
 
 def get_setting(name, default=None):
+    """
+    Read a setting from Streamlit Secrets first.
+    If unavailable, read it from the local .env file.
+    """
 
-    # First check Streamlit Cloud secrets.
     try:
         value = st.secrets.get(name)
 
@@ -121,7 +103,6 @@ def get_setting(name, default=None):
     except (FileNotFoundError, KeyError):
         pass
 
-    # Otherwise use the local .env file.
     return os.getenv(name, default)
 
 
@@ -133,12 +114,10 @@ MODEL_NAME = get_setting(
 )
 
 if not API_KEY:
-
     st.error(
         "Gemini API key not found. "
-        "Please configure GEMINI_API_KEY."
+        "Configure GEMINI_API_KEY in Streamlit Secrets."
     )
-
     st.stop()
 
 
@@ -148,18 +127,15 @@ if not API_KEY:
 
 @st.cache_resource
 def initialize_gemini(api_key):
-
+    """Initialize and cache the Gemini client."""
     return genai.Client(api_key=api_key)
 
 
 try:
-
     gemini_client = initialize_gemini(API_KEY)
 
 except Exception as error:
-
     st.error(f"Gemini initialization failed: {error}")
-
     st.stop()
 
 
@@ -168,37 +144,39 @@ except Exception as error:
 # ============================================================
 
 @st.cache_resource
-
-
-    
-
-@st.cache_resource
 def load_resources(db_path):
+    """
+    Load the embedding model and ChromaDB collection.
 
-    # Load the embedding model.
+    If the collection is empty, read sample_document.txt,
+    split it into chunks, create embeddings, and store them.
+    """
+
+    # Load the sentence embedding model.
     embedding_model = SentenceTransformer(
         EMBEDDING_MODEL_NAME
     )
 
-    # Connect to ChromaDB.
+    # Connect to the persistent ChromaDB database.
     chroma_client = chromadb.PersistentClient(
         path=db_path
     )
 
-    # Get the existing collection or create it.
+    # Get the collection or create it if it does not exist.
     collection = chroma_client.get_or_create_collection(
         name=COLLECTION_NAME,
         metadata={"hnsw:space": "cosine"}
     )
 
-    # If the collection is empty, load the sample document.
+    # Index the sample document if the collection is empty.
     if collection.count() == 0:
 
         document_path = BASE_DIR / "sample_document.txt"
 
         if not document_path.exists():
             raise FileNotFoundError(
-                "sample_document.txt was not found."
+                "sample_document.txt was not found. "
+                "Upload it to the same directory as app.py."
             )
 
         with open(
@@ -213,27 +191,36 @@ def load_resources(db_path):
                 "sample_document.txt is empty."
             )
 
-        # Split the document into manageable chunks.
+        # Split the document into overlapping chunks.
         chunk_size = 1000
         overlap = 150
+
         chunks = []
         start = 0
 
         while start < len(text):
-            chunk = text[start:start + chunk_size].strip()
+
+            chunk = text[
+                start:start + chunk_size
+            ].strip()
 
             if chunk:
                 chunks.append(chunk)
 
             start += chunk_size - overlap
 
-        # Convert document chunks into embeddings.
+        if not chunks:
+            raise ValueError(
+                "No document chunks could be created."
+            )
+
+        # Generate embeddings for all chunks.
         embeddings = embedding_model.encode(
             chunks,
             show_progress_bar=False
         ).tolist()
 
-        # Save the chunks and embeddings in ChromaDB.
+        # Store document chunks and embeddings.
         collection.add(
             ids=[
                 f"document_chunk_{i}"
@@ -250,12 +237,25 @@ def load_resources(db_path):
     return embedding_model, collection
 
 
+# IMPORTANT:
+# Initialize both variables before using them elsewhere.
+
+try:
+    embedding_model, collection = load_resources(DB_PATH)
+
+except Exception as error:
+    st.error(
+        "Could not load the embedding model or document database."
+    )
+    st.exception(error)
+    st.stop()
+
+
 # ============================================================
 # 7. CONVERSATIONAL MEMORY
 # ============================================================
 
 if "messages" not in st.session_state:
-
     st.session_state.messages = []
 
 
@@ -263,14 +263,14 @@ if "messages" not in st.session_state:
 # 8. GEMINI API CALL WITH RETRIES
 # ============================================================
 
-
 def call_gemini(prompt, max_attempts=2):
     """
-    Call Gemini with a timeout, limited retries,
-    and performance logging.
+    Send a prompt to Gemini.
+    Retry once if the request fails.
     """
 
     for attempt in range(max_attempts):
+
         start_time = time.time()
 
         try:
@@ -285,16 +285,22 @@ def call_gemini(prompt, max_attempts=2):
             )
 
             elapsed = time.time() - start_time
-            print(f"Gemini response time: {elapsed:.2f} seconds")
+
+            print(
+                f"Gemini response time: {elapsed:.2f} seconds"
+            )
 
             answer = (response.text or "").strip()
 
             if answer:
                 return answer
 
-            raise RuntimeError("Gemini returned an empty response.")
+            raise RuntimeError(
+                "Gemini returned an empty response."
+            )
 
         except Exception as error:
+
             elapsed = time.time() - start_time
 
             print(
@@ -305,11 +311,10 @@ def call_gemini(prompt, max_attempts=2):
             if attempt == max_attempts - 1:
                 raise RuntimeError(
                     "Gemini could not generate an answer. "
-                    "Check the terminal for the detailed error."
+                    "Check the API configuration and app logs."
                 ) from error
 
             time.sleep(1)
-
 
 
 # ============================================================
@@ -317,72 +322,61 @@ def call_gemini(prompt, max_attempts=2):
 # ============================================================
 
 def rewrite_question(question, chat_history):
-
     """
     Convert a follow-up question into a standalone question.
 
     Example:
-
-    Previous question:
-    What is machine learning?
-
-    Follow-up:
-    What are its applications?
+        Previous question: What is machine learning?
+        Follow-up: What are its applications?
 
     Rewritten:
-    What are the applications of machine learning?
+        What are the applications of machine learning?
     """
 
-    # No previous conversation.
     if not chat_history:
         return question
 
-    # Use the most recent messages.
+    # Use recent conversation messages.
     recent_history = chat_history[-6:]
 
     history_text = ""
 
     for message in recent_history:
-
         role = message["role"]
-
         content = message["content"]
 
         history_text += f"{role}: {content}\n"
 
     prompt = f"""
-You are a question rewriting assistant.
+You are a question-rewriting assistant.
 
-Your task is to rewrite the latest user question
-into a complete standalone question.
+Rewrite the latest user question into a complete,
+standalone question using the conversation history.
 
-RULES:
-
-1. Use conversation history only to understand references.
-2. Resolve pronouns such as it, its, they, them, and there.
+Rules:
+1. Use history only to understand references.
+2. Resolve pronouns such as it, its, they, and them.
 3. Do not answer the question.
-4. Do not invent new information.
+4. Do not invent information.
 5. Return only the rewritten question.
 6. Preserve the meaning of the original question.
 
-CONVERSATION HISTORY:
+Conversation history:
 {history_text}
 
-LATEST USER QUESTION:
+Latest user question:
 {question}
 
-STANDALONE QUESTION:
+Standalone question:
 """
 
     try:
-
         rewritten = call_gemini(prompt)
 
         return rewritten if rewritten else question
 
-    except Exception:
-
-        # If rewriting fails, use the original question.
+    except Exception as error:
+        print(f"Question rewriting failed: {error}")
         return question
 
 
@@ -391,15 +385,15 @@ STANDALONE QUESTION:
 # ============================================================
 
 def retrieve_documents(question):
-
     """
-    Convert the question into an embedding
-    and retrieve the three closest chunks.
+    Convert a question into an embedding and retrieve
+    the three closest document chunks.
     """
 
-    # Convert question into vector representation.
+    # Convert the question into a vector.
     question_embedding = embedding_model.encode(
-        question
+        question,
+        show_progress_bar=False
     ).tolist()
 
     total_chunks = collection.count()
@@ -407,7 +401,7 @@ def retrieve_documents(question):
     if total_chunks == 0:
         return [], [], []
 
-    # Search the existing ChromaDB collection.
+    # Retrieve the closest chunks from ChromaDB.
     results = collection.query(
         query_embeddings=[question_embedding],
         n_results=min(TOP_K, total_chunks),
@@ -418,11 +412,9 @@ def retrieve_documents(question):
         ]
     )
 
-    documents = results["documents"][0]
-
-    distances = results["distances"][0]
-
-    metadatas = results["metadatas"][0]
+    documents = results["documents"][0] or []
+    distances = results["distances"][0] or []
+    metadatas = results["metadatas"][0] or []
 
     return documents, distances, metadatas
 
@@ -432,6 +424,9 @@ def retrieve_documents(question):
 # ============================================================
 
 def build_context(documents):
+    """
+    Combine retrieved chunks into a single context string.
+    """
 
     context = ""
 
@@ -439,7 +434,6 @@ def build_context(documents):
         documents,
         start=1
     ):
-
         context += (
             f"\n[Chunk {index}]\n"
             f"{document}\n"
@@ -451,17 +445,22 @@ def build_context(documents):
 # ============================================================
 # 12. GENERATE DOCUMENT-BASED ANSWER
 # ============================================================
+
 def generate_rag_answer(question, chat_history):
     """
-    Conversational RAG pipeline with timing information.
-    Skips question rewriting for the first question.
-    """
+    Conversational Retrieval-Augmented Generation (RAG).
 
-    import time
+    Steps:
+    1. Rewrite the question if it is a follow-up.
+    2. Retrieve relevant document chunks.
+    3. Check the retrieval distance.
+    4. Build the document context.
+    5. Ask Gemini to answer using that context.
+    """
 
     start_time = time.time()
 
-    # STEP 1: Rewrite only when there is previous conversation.
+    # STEP 1: Rewrite the follow-up question.
     rewrite_start = time.time()
 
     if chat_history:
@@ -483,56 +482,62 @@ def generate_rag_answer(question, chat_history):
 
     retrieval_time = time.time() - retrieval_start
 
-    # STEP 3: Check whether relevant documents were retrieved.
+    # Prepare diagnostic information.
+    details = {
+        "original_question": question,
+        "rewritten_question": standalone_question,
+        "documents": documents,
+        "distances": distances,
+        "metadatas": metadatas,
+        "rewrite_time": round(rewrite_time, 2),
+        "retrieval_time": round(retrieval_time, 2),
+        "generation_time": 0,
+        "total_time": 0
+    }
+
+    # STEP 3: Check whether any chunks were retrieved.
     if not documents:
-        return (
-            REFUSAL_MESSAGE,
-            {
-                "original_question": question,
-                "rewritten_question": standalone_question,
-                "documents": documents,
-                "distances": distances,
-                "metadatas": metadatas,
-                "rewrite_time": round(rewrite_time, 2),
-                "retrieval_time": round(retrieval_time, 2),
-                "total_time": round(time.time() - start_time, 2),
-            }
+
+        details["total_time"] = round(
+            time.time() - start_time,
+            2
         )
 
-    # STEP 4: Apply the existing distance threshold.
+        return REFUSAL_MESSAGE, details
+
+    # STEP 4: Check the retrieval distance.
+    # Lower cosine distance generally means greater similarity.
     if distances and min(distances) > MAX_DISTANCE:
-        return (
-            REFUSAL_MESSAGE,
-            {
-                "original_question": question,
-                "rewritten_question": standalone_question,
-                "documents": documents,
-                "distances": distances,
-                "metadatas": metadatas,
-                "rewrite_time": round(rewrite_time, 2),
-                "retrieval_time": round(retrieval_time, 2),
-                "total_time": round(time.time() - start_time, 2),
-            }
+
+        details["total_time"] = round(
+            time.time() - start_time,
+            2
         )
 
-    # STEP 5: Build the document context.
+        return REFUSAL_MESSAGE, details
+
+    # STEP 5: Build the context from retrieved documents.
     context = build_context(documents)
 
-    # STEP 6: Generate an answer using Gemini.
+    # STEP 6: Generate an answer with Gemini.
     generation_start = time.time()
 
     prompt = f"""
 You are a document-based question-answering assistant.
 
-Answer the user's question using only the information
+Answer the user's question using only information
 supported by the document context below.
 
-If the context does not contain enough information,
-respond exactly:
-{REFUSAL_MESSAGE}
-
-Use simple, clear language. Do not invent facts.
-Cite supporting chunks when possible.
+Rules:
+1. Use simple, clear language.
+2. Do not invent facts.
+3. If the context does not contain enough information,
+   respond exactly:
+   {REFUSAL_MESSAGE}
+4. When possible, mention the chunk number supporting
+   your answer.
+5. Conversation history can clarify the question, but
+   factual answers must be supported by the document context.
 
 Document context:
 {context}
@@ -548,19 +553,17 @@ Answer:
     generation_time = time.time() - generation_start
     total_time = time.time() - start_time
 
-    # STEP 7: Return the answer and diagnostic details.
-    details = {
-        "original_question": question,
-        "rewritten_question": standalone_question,
-        "documents": documents,
-        "distances": distances,
-        "metadatas": metadatas,
-        "rewrite_time": round(rewrite_time, 2),
-        "retrieval_time": round(retrieval_time, 2),
-        "generation_time": round(generation_time, 2),
-        "total_time": round(total_time, 2),
-    }
+    details["generation_time"] = round(
+        generation_time,
+        2
+    )
 
+    details["total_time"] = round(
+        total_time,
+        2
+    )
+
+    # Print performance information in the app logs.
     print("\n--- RAG PERFORMANCE ---")
     print(f"Question rewriting: {rewrite_time:.2f} seconds")
     print(f"Document retrieval: {retrieval_time:.2f} seconds")
@@ -571,9 +574,84 @@ Answer:
     return answer, details
 
 
+# ============================================================
+# 13. DISPLAY RETRIEVAL DETAILS
+# ============================================================
+
+def display_retrieval_details(details):
+    """
+    Display the original question, rewritten question,
+    retrieved chunks, distances, and performance times.
+    """
+
+    st.write(
+        "**Original Question:**",
+        details.get("original_question", "")
+    )
+
+    st.write(
+        "**Rewritten Question:**",
+        details.get("rewritten_question", "")
+    )
+
+    documents = details.get("documents", [])
+    distances = details.get("distances", [])
+    metadatas = details.get("metadatas", [])
+
+    if documents:
+
+        for index, document in enumerate(
+            documents,
+            start=1
+        ):
+
+            st.markdown(f"### Chunk {index}")
+            st.write(document)
+
+            distance_index = index - 1
+
+            if distance_index < len(distances):
+                st.write(
+                    "**Distance:**",
+                    round(distances[distance_index], 4)
+                )
+
+            if distance_index < len(metadatas):
+                metadata = metadatas[distance_index]
+
+                if metadata:
+                    st.caption(
+                        f"Source: {metadata.get('source', 'Unknown')}"
+                    )
+
+    else:
+        st.info("No document chunks were retrieved.")
+
+    st.divider()
+
+    st.write(
+        "**Question Rewriting Time:**",
+        f"{details.get('rewrite_time', 0)} seconds"
+    )
+
+    st.write(
+        "**Document Retrieval Time:**",
+        f"{details.get('retrieval_time', 0)} seconds"
+    )
+
+    st.write(
+        "**Answer Generation Time:**",
+        f"{details.get('generation_time', 0)} seconds"
+    )
+
+    st.write(
+        "**Total Processing Time:**",
+        f"{details.get('total_time', 0)} seconds"
+    )
+
 
 # ============================================================
-# 13. SIDEBAR
+# 14. SIDEBAR
 # ============================================================
 
 with st.sidebar:
@@ -594,8 +672,11 @@ with st.sidebar:
 
     st.write("**Vector Database:** ChromaDB")
 
+    st.write("**Embedding Model:** all-MiniLM-L6-v2")
+
     st.write("**Retrieval:** Top 3 chunks")
 
+    # The collection is initialized before this section.
     st.write(
         f"**Indexed Chunks:** {collection.count()}"
     )
@@ -612,9 +693,7 @@ with st.sidebar:
         "Clear Chat",
         use_container_width=True
     ):
-
         st.session_state.messages = []
-
         st.rerun()
 
     st.divider()
@@ -626,7 +705,7 @@ with st.sidebar:
 
 
 # ============================================================
-# 14. MAIN CHAT INTERFACE
+# 15. MAIN CHAT INTERFACE
 # ============================================================
 
 st.title("📚 Document Q&A Assistant")
@@ -653,7 +732,7 @@ st.markdown(
 
 
 # ============================================================
-# 15. DISPLAY PREVIOUS CHAT MESSAGES
+# 16. DISPLAY PREVIOUS CHAT MESSAGES
 # ============================================================
 
 for message in st.session_state.messages:
@@ -662,50 +741,20 @@ for message in st.session_state.messages:
 
         st.markdown(message["content"])
 
-        # Display saved retrieval details.
+        # Show retrieval information for assistant responses.
         if (
             message["role"] == "assistant"
             and "retrieval" in message
         ):
 
-            details = message["retrieval"]
-
             with st.expander("View Retrieval Details"):
-
-                st.write(
-                    "**Original Question:**",
-                    details["original_question"]
+                display_retrieval_details(
+                    message["retrieval"]
                 )
-
-                st.write(
-                    "**Rewritten Question:**",
-                    details["rewritten_question"]
-                )
-
-                for index, document in enumerate(
-                    details["documents"],
-                    start=1
-                ):
-
-                    st.markdown(
-                        f"### Chunk {index}"
-                    )
-
-                    st.write(document)
-
-                    if index <= len(details["distances"]):
-
-                        st.write(
-                            "Distance:",
-                            round(
-                                details["distances"][index - 1],
-                                4
-                            )
-                        )
 
 
 # ============================================================
-# 16. CHAT INPUT
+# 17. CHAT INPUT
 # ============================================================
 
 user_question = st.chat_input(
@@ -714,12 +763,13 @@ user_question = st.chat_input(
 
 
 # ============================================================
-# 17. PROCESS USER QUESTION
+# 18. PROCESS USER QUESTION
 # ============================================================
 
 if user_question:
 
-    # Capture previous history before saving new question.
+    # Capture previous conversation before adding
+    # the new question.
     previous_history = [
         {
             "role": message["role"],
@@ -728,21 +778,24 @@ if user_question:
         for message in st.session_state.messages
     ]
 
-    # Save user message.
-    st.session_state.messages.append({
-        "role": "user",
-        "content": user_question
-    })
+    # Save the user's message in session memory.
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": user_question
+        }
+    )
 
-    # Display user message.
+    # Display the new user message.
     with st.chat_message("user"):
-
         st.markdown(user_question)
 
-    # Generate assistant response.
+    # Generate and display the assistant response.
     with st.chat_message("assistant"):
 
-        with st.spinner("Searching documents and generating answer..."):
+        with st.spinner(
+            "Searching documents and generating answer..."
+        ):
 
             try:
 
@@ -753,54 +806,18 @@ if user_question:
 
                 st.markdown(answer)
 
-                # Display retrieval details.
+                # Display the retrieval information.
                 with st.expander("View Retrieval Details"):
+                    display_retrieval_details(details)
 
-                    st.write(
-                        "**Original Question:**",
-                        details["original_question"]
-                    )
-
-                    st.write(
-                        "**Rewritten Question:**",
-                        details["rewritten_question"]
-                    )
-
-                    if details["documents"]:
-
-                        for index, document in enumerate(
-                            details["documents"],
-                            start=1
-                        ):
-
-                            st.markdown(
-                                f"### Chunk {index}"
-                            )
-
-                            st.write(document)
-
-                            if index <= len(details["distances"]):
-
-                                st.write(
-                                    "Distance:",
-                                    round(
-                                        details["distances"][index - 1],
-                                        4
-                                    )
-                                )
-
-                    else:
-
-                        st.info(
-                            "No document chunks were retrieved."
-                        )
-
-                # Save successful assistant response.
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": answer,
-                    "retrieval": details
-                })
+                # Save the assistant response and its details.
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": answer,
+                        "retrieval": details
+                    }
+                )
 
             except Exception as error:
 
@@ -811,10 +828,9 @@ if user_question:
                 st.code(str(error))
 
                 st.info(
-                    "Please check your Gemini API configuration "
-                    "and internet connection, then try again."
+                    "Check your Gemini API configuration, "
+                    "internet connection, and application logs."
                 )
 
-                # Remove the unanswered user question so
-                # it does not confuse future follow-ups.
+                # Remove the unanswered user message.
                 st.session_state.messages.pop()
